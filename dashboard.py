@@ -9,17 +9,60 @@ from datetime import datetime, timedelta
 # --- КОНФІГУРАЦІЯ ---
 st.set_page_config(page_title="EU GRID ANALYTICS", layout="wide", page_icon="🇪🇺")
 
-# --- СТИЛІ ---
+# --- СТИЛІ (ОНОВЛЕНО ФОН) ---
 st.markdown("""
     <style>
-    .stApp { background-color: #080808; color: #e0e0e0; }
+    /* Встановлюємо зображення як фон для всієї програми */
+    .stApp {
+        background-image: url("https://raw.githubusercontent.com/boss240/energy-aggregator/main/image_13.png");
+        background-size: cover;      /* Розтягує зображення на весь екран */
+        background-repeat: no-repeat; /* Запобігає повторенню зображення */
+        background-attachment: fixed; /* Фіксує фон під час прокручування */
+        color: #e0e0e0;              /* Загальний колір тексту (світло-сірий) */
+    }
+    
+    /* Інші стилі залишаються без змін */
     h1, h2, h3 { color: #00ff41 !important; font-family: 'Courier New', monospace; }
     div[data-testid="stMetricValue"] > div { font-size: 1.8rem !important; color: #00ffff; text-shadow: 0 0 5px #00ffff; }
     div[data-testid="stMetricLabel"] > div { font-size: 1rem !important; color: #cccccc; }
-    .status-time { font-size: 1.2rem; color: #ffaa00; font-weight: bold; background: #222; padding: 5px 10px; border-radius: 5px; display: inline-block;}
-    .analysis-box { background-color: #1a1a1a; border-left: 4px solid #00ff41; padding: 15px; border-radius: 5px; margin-bottom: 20px;}
+    .status-time { font-size: 1.2rem; color: #ffaa00; font-weight: bold; background: rgba(34, 34, 34, 0.8); padding: 5px 10px; border-radius: 5px; display: inline-block;}
+    .analysis-box { background-color: rgba(26, 26, 26, 0.8); border-left: 4px solid #00ff41; padding: 15px; border-radius: 5px; margin-bottom: 20px;}
     </style>
 """, unsafe_allow_html=True)
+
+# --- ПЕРЕВІРКА СЕКРЕТІВ ТА ПАРОЛЯ ---
+try:
+    api_key = st.secrets["entsoe_key"]
+    app_password = st.secrets["app_password"]
+except KeyError:
+    st.error("Помилка: Секрети (entsoe_key або app_password) не налаштовано в Streamlit Cloud.")
+    st.stop()
+
+def check_password():
+    """Повертає True, якщо пароль введено правильно."""
+    def password_entered():
+        if st.session_state["password"] == app_password:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.markdown("### 🔒 Доступ закрито")
+    st.text_input("🔑 Введіть пароль доступу:", type="password", on_change=password_entered, key="password")
+    
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("😕 Невірний пароль. Спробуйте ще раз.")
+    return False
+
+if not check_password():
+    st.stop()
+
+# ==========================================
+# ОСНОВНИЙ КОД ДАШБОРДУ
+# ==========================================
 
 # --- ДОВІДНИК ---
 COUNTRY_INFO = {
@@ -34,19 +77,10 @@ COUNTRY_INFO = {
     "MD": {"name": "Молдова", "tso": "Moldelectrica", "anom": "Дефіцит.", "cause": "Немає генерації.", "zone": "UA-IPS"}
 }
 
-# --- АВТО-ВХІД ---
-try:
-    api_key = st.secrets["entsoe_key"]
-except:
-    st.error("Помилка: API ключ не знайдено в налаштуваннях сервера (Secrets).")
-    st.stop()
-
-# --- SIDEBAR ---
-st.sidebar.header("🔐 ПАНЕЛЬ КЕРУВАННЯ")
+st.sidebar.header("⚙️ ПАНЕЛЬ КЕРУВАННЯ")
 selected_code = st.sidebar.selectbox("Оберіть Зону", list(COUNTRY_INFO.keys()), format_func=lambda x: f"{x} - {COUNTRY_INFO[x]['name']}")
 info = COUNTRY_INFO[selected_code]
 
-# --- МАПІНГ ГЕНЕРАЦІЇ ---
 UA_GEN_MAP = {
     'Biomass': 'Біомаса', 'Fossil Brown coal/Lignite': 'Вугілля (Буре)',
     'Fossil Gas': 'Газ', 'Fossil Hard coal': 'Вугілля (Кам.)',
@@ -56,7 +90,6 @@ UA_GEN_MAP = {
     'Waste': 'Відходи', 'Other': 'Інше', 'Fossil Oil': 'Мазут', 'Geothermal': 'Геотерм.'
 }
 
-# --- ФУНКЦІЇ ДАНИХ ---
 def safe_float(val):
     try:
         if isinstance(val, (pd.Series, pd.DataFrame)):
@@ -138,19 +171,17 @@ def analyze_period_change(series, hours=4):
         return f"{trend} {sign}{diff:.1f}€ ({abs(pct):.0f}%)", diff
     except: return "Помилка", 0
 
-# --- MAIN APP ---
 now = pd.Timestamp.now(tz='Europe/Kyiv')
 
-# HEADER З КНОПКОЮ ОНОВЛЕННЯ
 col_title, col_btn = st.columns([3, 1])
 with col_title:
     st.title(f"⚡ {info['name']} ({selected_code})")
     st.markdown(f"<div class='status-time'>🕒 Стан даних на: {now.strftime('%d.%m.%Y %H:%M:%S')}</div>", unsafe_allow_html=True)
 with col_btn:
-    st.write("") # Відступ
+    st.write("") 
     if st.button("🔄 ОНОВИТИ ДАНІ", type="primary", use_container_width=True):
-        st.cache_data.clear() # Очищаємо кеш, щоб завантажити свіжі дані
-        st.rerun() # Перезавантажуємо сторінку
+        st.cache_data.clear() 
+        st.rerun() 
 
 with st.expander(f"ℹ️ ДОСЬЄ: {info['name']}", expanded=False):
     c1, c2 = st.columns(2)
@@ -164,7 +195,6 @@ with st.spinner(f"📡 З'єднання з ENTSO-E ({selected_code}). Отри�
 today_start = now.replace(hour=0, minute=0)
 data_today = {k: (v.loc[today_start:] if v is not None else None) for k, v in live_data.items()}
 
-# --- БЛОК АВТОМАТИЧНОГО АНАЛІЗУ ---
 if live_data['prices'] is not None and hist_data['yesterday']['prices'] is not None:
     try:
         y_avg = safe_float(hist_data['yesterday']['prices'].mean())
@@ -181,10 +211,8 @@ if live_data['prices'] is not None and hist_data['yesterday']['prices'] is not N
         """, unsafe_allow_html=True)
     except: pass
 
-# --- МЕТРИКИ ---
 if live_data['prices'] is not None:
     curr_price = safe_float(live_data['prices'].asof(now))
-    
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Спот Ціна", f"{curr_price:.2f} €", help="Поточна ціна електроенергії на РДН")
     
@@ -204,17 +232,13 @@ if live_data['prices'] is not None:
 
     tabs = st.tabs(["⚖️ Небаланси", "🌱 Зелена Енергія", "📉 РДН (Spot)", "🏗️ Генерація"])
 
-    # TAB 1: IMBALANCE
     with tabs[0]:
-        # --- ПОЯСНЕННЯ ПРАВИЛ ЄС ---
         st.info("💡 **Чому на графіку одна або дві лінії?** Згідно з новими правилами ЄС (Electricity Balancing Guideline), більшість країн перейшли на **«Єдину ціну небалансу» (Single Pricing)** — лінія одна, ціна штрафу однакова як для профіциту, так і для дефіциту. Проте деякі зони ще використовують стару систему **подвійних цін (Dual Pricing)**, де відображаються окремі ціни для Long (надлишок) та Short (нестача).")
-        
         col_g, col_a = st.columns([2, 1])
         with col_a:
             st.markdown("#### 📊 Аналіз")
             imb_trend, _ = analyze_period_change(live_data['imb_p'])
             st.info(f"Тренд ціни (4г): {imb_trend}")
-            
             if data_today['imb_p'] is not None:
                 try:
                     p_max = safe_float(data_today['imb_p'].max())
@@ -243,7 +267,6 @@ if live_data['prices'] is not None:
             if live_data['imb_p'] is not None:
                 fig = make_subplots(specs=[[{"secondary_y": True}]])
                 df_p = live_data['imb_p'].loc[now-timedelta(hours=24):now].fillna(method='ffill').fillna(0)
-                
                 if isinstance(df_p, pd.DataFrame) and len(df_p.columns) > 1:
                     labels = ["Long (Надлишок)", "Short (Дефіцит)"]
                     for i, c in enumerate(df_p.columns):
@@ -261,7 +284,6 @@ if live_data['prices'] is not None:
                 fig.update_layout(template="plotly_dark", height=450, title="Небаланси (24 год)", margin=dict(l=0, r=0, t=30, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                 st.plotly_chart(fig, use_container_width=True)
 
-    # TAB 2: GREEN
     with tabs[1]:
         st.markdown("### 🌱 Аналіз ВДЕ")
         def calc_res_stats(dataset):
@@ -302,7 +324,6 @@ if live_data['prices'] is not None:
                     fig.update_layout(template="plotly_dark", title="Профіль ВДЕ (Сьогодні)", height=400, margin=dict(l=0, r=0, t=30, b=0))
                     st.plotly_chart(fig, use_container_width=True)
 
-    # TAB 3: SPOT
     with tabs[2]:
         st.markdown("### 📉 РДН")
         def calc_dam_stats(dataset):
@@ -333,7 +354,6 @@ if live_data['prices'] is not None:
         fig.update_layout(template="plotly_dark", height=350, title="Динаміка РДН", margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-    # TAB 4: GEN
     with tabs[3]:
         st.markdown("### 🏗️ Генерація")
         if live_data['gen'] is not None:
