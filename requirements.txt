@@ -1,10 +1,9 @@
-streamlit
 pandas
 numpy
 entsoe-py
 
-plotly
 fastapi
 uvicorn
 entsoe-py
 pandas
+
