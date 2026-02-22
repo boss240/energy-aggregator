@@ -7,10 +7,10 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import os
 
-# --- КОНФІГУРАЦІЯ ---
+# --- 1. КОНФІГУРАЦІЯ СТОРІНКИ ---
 st.set_page_config(page_title="EU GRID ANALYTICS", layout="wide", page_icon="🇪🇺")
 
-# --- СТИЛІ ---
+# --- 2. СТИЛІЗАЦІЯ ---
 st.markdown("""
     <style>
     .stApp {
@@ -22,47 +22,53 @@ st.markdown("""
     }
     h1, h2, h3 { color: #00ff41 !important; font-family: 'Courier New', monospace; }
     div[data-testid="stMetricValue"] > div { font-size: 1.8rem !important; color: #00ffff; text-shadow: 0 0 5px #00ffff; }
+    div[data-testid="stMetricLabel"] > div { font-size: 1rem !important; color: #cccccc; }
     .status-time { font-size: 1.2rem; color: #ffaa00; font-weight: bold; background: rgba(34, 34, 34, 0.8); padding: 5px 10px; border-radius: 5px; display: inline-block;}
     .analysis-box { background-color: rgba(26, 26, 26, 0.8); border-left: 4px solid #00ff41; padding: 15px; border-radius: 5px; margin-bottom: 20px;}
     </style>
 """, unsafe_allow_html=True)
 
-# --- ПЕРЕВІРКА СЕКРЕТІВ (З ПОКРАЩЕНОЮ ПІДТРИМКОЮ RENDER/STREAMLIT) ---
+# --- 3. СЕКРЕТИ ТА АВТОРИЗАЦІЯ (RENDER COMPATIBLE) ---
+# Перевіряємо st.secrets (Streamlit Cloud) або os.environ (Render)
 api_key = st.secrets.get("entsoe_key") or os.environ.get("entsoe_key")
 app_password = st.secrets.get("app_password") or os.environ.get("app_password")
 
 if not api_key or not app_password:
-    st.error("Критична помилка: Налаштування сервера не знайдені.")
+    st.error("Помилка конфігурації: Ключ API або пароль не знайдено.")
     st.stop()
 
-# --- АВТОРИЗАЦІЯ ---
 def check_password():
-    if st.session_state.get("password_correct", False): return True
-    
-    st.markdown("### 🔒 Доступ закрито")
-    pwd = st.text_input("🔑 Введіть пароль доступу:", type="password")
-    if st.button("Увійти"):
-        if pwd == app_password:
+    if st.session_state.get("password_correct", False):
+        return True
+
+    def password_entered():
+        if st.session_state["password"] == app_password:
             st.session_state["password_correct"] = True
-            st.rerun()
+            del st.session_state["password"]
         else:
-            st.error("😕 Невірний пароль.")
+            st.session_state["password_correct"] = False
+
+    st.markdown("### 🔒 Обмежений доступ")
+    st.text_input("🔑 Введіть пароль доступу:", type="password", on_change=password_entered, key="password")
+    
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("😕 Невірний пароль. Спробуйте ще раз.")
     return False
 
 if not check_password():
     st.stop()
 
-# --- ДОВІДНИК ---
+# --- 4. ДОВІДНИКИ ---
 COUNTRY_INFO = {
-    "UA": {"name": "Україна", "tso": "Укренерго", "anom": "Дефіцит, обстріли.", "zone": "UA_IPS"},
     "PL": {"name": "Польща", "tso": "PSE S.A.", "anom": "Вугільна інерція.", "zone": "PL"},
-    "DE_LU": {"name": "Німеччина", "tso": "TenneT/Amprion", "anom": "Від'ємні ціни.", "zone": "DE_LU"},
+    "UA": {"name": "Україна", "tso": "Укренерго", "anom": "Дефіцит через обстріли.", "zone": "UA_IPS"},
+    "DE_LU": {"name": "Німеччина", "tso": "TenneT/Amprion", "anom": "Від’ємні ціни.", "zone": "DE_LU"},
     "HU": {"name": "Угорщина", "tso": "MAVIR", "anom": "Дорогий імпорт.", "zone": "HU"},
-    "RO": {"name": "Румунія", "tso": "Transelectrica", "anom": "Посухи.", "zone": "RO"}
+    "RO": {"name": "Румунія", "tso": "Transelectrica", "anom": "Гідрозалежність.", "zone": "RO"}
 }
 
 UA_GEN_MAP = {
-    'Nuclear': 'АЕС', 'Solar': 'Сонце', 'Wind Onshore': 'Вітер', 
+    'Nuclear': 'АЕС', 'Solar': 'Сонце', 'Wind Onshore': 'Вітер',
     'Hydro Water Reservoir': 'ГЕС', 'Fossil Hard coal': 'Вугілля',
     'Fossil Gas': 'Газ', 'Hydro Pumped Storage': 'ГАЕС'
 }
@@ -76,107 +82,110 @@ def safe_float(val):
         return float(val) if not pd.isna(val) else 0.0
     except: return 0.0
 
+# --- 5. ФУНКЦІЇ ОТРИМАННЯ ДАНИХ ---
 @st.cache_data(ttl=300)
-def fetch_current_data(api_key, country_code):
+def fetch_current_data(api_key, country):
     client = EntsoePandasClient(api_key=api_key)
-    now = pd.Timestamp.now(tz='Europe/Kyiv')
-    start = now - timedelta(hours=48)
-    end = now + timedelta(hours=1) # Беремо до поточної години
+    now_ts = pd.Timestamp.now(tz='Europe/Kyiv')
+    start = now_ts - timedelta(hours=48)
+    end = now_ts + timedelta(hours=24)
+    data = {}
     
-    data = {'prices': None, 'load': None, 'imb_p': None, 'imb_v': None, 'gen': None}
-    
-    try:
-        data['prices'] = client.query_day_ahead_prices(country_code, start=start, end=end + timedelta(hours=24))
-        data['load'] = client.query_load(country_code, start=start, end=end)
-        
+    def get(func, *args, **kwargs):
         try:
-            gen = client.query_generation(country_code, start=start, end=end)
-            if isinstance(gen.columns, pd.MultiIndex): gen.columns = gen.columns.get_level_values(0)
-            data['gen'] = gen.rename(columns=UA_GEN_MAP)
-        except: pass
+            res = func(*args, **kwargs)
+            if res is not None:
+                if res.index.tz is None: res.index = res.index.tz_localize('UTC').tz_convert('Europe/Kyiv')
+                else: res.index = res.index.tz_convert('Europe/Kyiv')
+                return res[~res.index.duplicated(keep='last')]
+        except: return None
+        return None
 
-        try:
-            data['imb_p'] = client.query_imbalance_prices(country_code, start=start, end=end)
-            data['imb_v'] = client.query_imbalance_volumes(country_code, start=start, end=end)
-        except: pass
-        
-    except Exception as e:
-        st.sidebar.error(f"Помилка API: {e}")
+    data['prices'] = get(client.query_day_ahead_prices, country, start=start, end=end)
+    data['load'] = get(client.query_load, country, start=start, end=end)
+    data['imb_p'] = get(client.query_imbalance_prices, country, start=start, end=end)
+    data['imb_v'] = get(client.query_imbalance_volumes, country, start=start, end=end)
+    
+    gen = get(client.query_generation, country, start=start, end=end)
+    if gen is not None:
+        if isinstance(gen.columns, pd.MultiIndex): 
+            gen.columns = gen.columns.get_level_values(0)
+        data['gen'] = gen.rename(columns=UA_GEN_MAP)
     return data
 
-# --- ОСНОВНИЙ ІНТЕРФЕЙС ---
-selected_key = st.sidebar.selectbox("Оберіть Зону", list(COUNTRY_INFO.keys()), format_func=lambda x: COUNTRY_INFO[x]['name'])
-info = COUNTRY_INFO[selected_key]
-zone = info['zone']
-
-now_time = pd.Timestamp.now(tz='Europe/Kyiv')
+# --- 6. ОСНОВНИЙ ІНТЕРФЕЙС ---
+now_curr = pd.Timestamp.now(tz='Europe/Kyiv')
+selected_code = st.sidebar.selectbox("Оберіть зону", list(COUNTRY_INFO.keys()), format_func=lambda x: f"{x} - {COUNTRY_INFO[x]['name']}")
+info = COUNTRY_INFO[selected_code]
 
 col_title, col_btn = st.columns([3, 1])
 with col_title:
-    st.title(f"⚡ {info['name']}")
-    st.markdown(f"<div class='status-time'>🕒 Дані на: {now_time.strftime('%H:%M:%S')}</div>", unsafe_allow_html=True)
+    st.title(f"⚡ {info['name']} (EC GRID)")
+    st.markdown(f"<div class='status-time'>🕒 Час оновлення: {now_curr.strftime('%H:%M:%S')}</div>", unsafe_allow_html=True)
 
-if col_btn.button("🔄 ОНОВИТИ", type="primary", use_container_width=True):
+if col_btn.button("🔄 ОНОВИТИ ДАНІ", type="primary", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
-live_data = fetch_current_data(api_key, zone)
+with st.spinner(f"📡 Завантаження даних ENTSO-E для зони {selected_code}..."):
+    live_data = fetch_current_data(api_key, info['zone'])
 
-if live_data['prices'] is not None:
-    curr_p = safe_float(live_data['prices'].asof(now_time))
+if live_data.get('prices') is not None:
+    curr_price = safe_float(live_data['prices'].asof(now_curr))
     
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Спот Ціна", f"{curr_p:.2f} €")
+    # МЕТРИКИ ВЕРХНЬОГО РІВНЯ
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Спот ціна", f"{curr_price:.2f} €")
     
     res_share = "N/A"
-    if live_data['gen'] is not None:
+    if live_data.get('gen') is not None:
         latest_gen = live_data['gen'].ffill().iloc[-1]
         green = latest_gen[[c for c in latest_gen.index if any(x in c for x in ['Сонце','Вітер','ГЕС'])]].sum()
         res_share = f"{(green / latest_gen.sum() * 100):.1f}%" if latest_gen.sum() > 0 else "0%"
-        
+    
     k2.metric("Частка ВДЕ", res_share)
     k3.metric("Статус", "ONLINE 🟢")
+    k4.metric("Зона", selected_code)
 
-    tabs = st.tabs(["⚖️ Небаланси", "🌱 ВДЕ", "📉 РДН", "🏗️ Генерація"])
+    tabs = st.tabs(["⚖️ Небаланси", "🌱 Зелена Енергія", "📉 РДН", "🏗️ Генерація"])
 
     with tabs[0]:
+        st.info("📊 Візуалізація небалансів (Single vs Dual Pricing)")
         if live_data['imb_p'] is not None:
             fig = make_subplots(specs=[[{"secondary_y": True}]])
-            # Ціна небалансу
-            fig.add_trace(go.Scatter(x=live_data['imb_p'].index, y=live_data['imb_p'].iloc[:,0], name="Ціна Небалансу", line=dict(color='#ffaa00')), secondary_y=True)
-            # Обсяг небалансу
-            if live_data['imb_v'] is not None:
-                v_vals = live_data['imb_v'].iloc[:,0]
-                colors = ['#ff0044' if x < 0 else '#00ff41' for x in v_vals]
-                fig.add_trace(go.Bar(x=live_data['imb_v'].index, y=v_vals, name="Обсяг (MW)", marker_color=colors, opacity=0.4), secondary_y=False)
+            imb_p_df = live_data['imb_p'].ffill()
+            fig.add_trace(go.Scatter(x=imb_p_df.index, y=imb_p_df.iloc[:,0], name="Ціна небалансу", line=dict(color='#ffaa00')), secondary_y=True)
             
-            fig.update_layout(template="plotly_dark", height=400, title="Стан балансу (24 год)")
+            if live_data['imb_v'] is not None:
+                imb_v_vals = live_data['imb_v'].iloc[:,0]
+                colors = ['#ff0044' if x < 0 else '#00ff41' for x in imb_v_vals]
+                fig.add_trace(go.Bar(x=live_data['imb_v'].index, y=imb_v_vals, marker_color=colors, name="Обсяг (MW)", opacity=0.4), secondary_y=False)
+            
+            fig.update_layout(template="plotly_dark", height=450, title="Небаланси (останні 24г)")
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Дані небалансів для цієї зони недоступні через API.")
 
     with tabs[1]:
-        if live_data['gen'] is not None:
+        if live_data.get('gen') is not None:
             g = live_data['gen'].ffill()
             green_cols = [c for c in g.columns if any(x in c for x in ['Сонце','Вітер','ГЕС'])]
             if green_cols:
                 fig = go.Figure()
                 for c in green_cols:
                     fig.add_trace(go.Scatter(x=g.index, y=g[c], name=c, stackgroup='one'))
-                fig.update_layout(template="plotly_dark", title="Профіль ВДЕ", height=400)
+                fig.update_layout(template="plotly_dark", title="Виробництво ВДЕ", height=450)
                 st.plotly_chart(fig, use_container_width=True)
 
     with tabs[2]:
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=live_data['prices'].index, y=live_data['prices'].values, name="Price", line=dict(color='#00ff41')))
-        fig.update_layout(template="plotly_dark", title="Ринок на добу наперед (DA)", height=400)
+        fig.add_trace(go.Scatter(x=live_data['prices'].index, y=live_data['prices'].values, name="РДН Ціна", line=dict(color='#00ff41')))
+        fig.update_layout(template="plotly_dark", title="Ціни Day-Ahead", height=450)
         st.plotly_chart(fig, use_container_width=True)
 
     with tabs[3]:
-        if live_data['gen'] is not None:
-            g = live_data['gen'].ffill().iloc[-1].sort_values(ascending=False)
-            fig = go.Figure(go.Pie(labels=g.index, values=g.values, hole=.3))
+        if live_data.get('gen') is not None:
+            last_gen_mix = live_data['gen'].ffill().iloc[-1].sort_values(ascending=False)
+            fig = go.Figure(go.Pie(labels=last_gen_mix.index, values=last_gen_mix.values, hole=.3))
             fig.update_layout(template="plotly_dark", title="Енергомікс")
             st.plotly_chart(fig, use_container_width=True)
 else:
-    st.warning(f"Неможливо отримати дані для зони {selected_key}. Перевірте доступність API.")
+    st.warning(f"Дані для зони {selected_code} тимчасово недоступні.")
