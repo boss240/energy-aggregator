@@ -6,6 +6,29 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import os
+import streamlit as st
+
+# Функція для безпечного отримання секретів без виклику помилки Streamlit
+def get_secret(key):
+    # 1. Пріоритет для Render (змінні оточення сервера)
+    val = os.environ.get(key)
+    if val:
+        return val
+    # 2. Резерв для локальної розробки або Streamlit Cloud
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return None
+
+# Використання
+api_key = get_secret("entsoe_key")
+app_password = get_secret("app_password")
+
+if not api_key:
+    st.error("Критична помилка: 'entsoe_key' не знайдено в налаштуваннях сервера.")
+    st.stop()
 
 # --- 1. КОНФІГУРАЦІЯ СТОРІНКИ ---
 st.set_page_config(page_title="EU GRID ANALYTICS", layout="wide", page_icon="🇪🇺")
@@ -189,3 +212,4 @@ if live_data.get('prices') is not None:
             st.plotly_chart(fig, use_container_width=True)
 else:
     st.warning(f"Дані для зони {selected_code} тимчасово недоступні.")
+
